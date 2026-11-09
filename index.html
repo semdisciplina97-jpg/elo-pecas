@@ -19,16 +19,22 @@
   .info b { color: #fff; }
   #tela { flex: 1; width: 100%; display: block; }
   .botoes { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); justify-content: center; pointer-events: none; }
-  .botoes button { pointer-events: auto; font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 22px; border: 1px solid #d0cbc0; background: rgba(255,255,255,.92); color: var(--texto); }
+  .botoes button { pointer-events: auto; font: inherit; font-size: 14px; font-weight: 600; padding: 10px 13px; border-radius: 22px; border: 1px solid #d0cbc0; background: rgba(255,255,255,.92); color: var(--texto); white-space: nowrap; }
   .botoes button.ativo { background: var(--laranja); border-color: var(--laranja); color: #fff; }
+  .separar { position: fixed; left: 16px; right: 16px; bottom: calc(62px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 22px; border: 1px solid #d0cbc0; background: rgba(255,255,255,.92); font-size: 14px; font-weight: 600; }
+  .separar input { flex: 1; accent-color: var(--laranja); }
   .msg { padding: 24px 16px; font-size: 17px; }
 </style>
 </head>
 <body>
 <header id="cab"></header>
 <canvas id="tela"></canvas>
+<div class="separar" id="separar" hidden>
+  <span>Afastar</span><input type="range" id="distancia" min="0.15" max="2" step="0.05" value="0.8">
+</div>
 <div class="botoes" id="botoes" hidden>
   <button id="btSo">Só a peça</button>
+  <button id="btExplodir">Explodir</button>
   <button id="btVista">Ver de frente</button>
 </div>
 <script>
@@ -113,11 +119,17 @@
     var polis = [];
     var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     DADOS.partes.forEach(function (parte) {
+      // centro da caixa da peça: a explosão afasta a peça nessa direção
+      var pmin = [Infinity, Infinity, Infinity], pmax = [-Infinity, -Infinity, -Infinity];
+      var centroPeca = [0, 0, 0];
       parte.f.forEach(function (plano) {
         var pts = [];
         for (var i = 0; i + 2 < plano.length; i += 3) {
           var p = [plano[i], plano[i + 1], plano[i + 2]];
-          for (var k = 0; k < 3; k++) { if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k]; }
+          for (var k = 0; k < 3; k++) {
+            if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k];
+            if (p[k] < pmin[k]) pmin[k] = p[k]; if (p[k] > pmax[k]) pmax[k] = p[k];
+          }
           pts.push(p);
         }
         if (pts.length < 3) return;
@@ -129,13 +141,17 @@
           n[2] += (a[0] - b[0]) * (a[1] + b[1]);
         }
         var L = Math.hypot(n[0], n[1], n[2]) || 1;
-        polis.push({ p: pts, alvo: parte.a, n: [n[0] / L, n[1] / L, n[2] / L] });
+        polis.push({ p: pts, alvo: parte.a, n: [n[0] / L, n[1] / L, n[2] / L], c: centroPeca });
       });
+      for (var q = 0; q < 3; q++) centroPeca[q] = (pmin[q] + pmax[q]) / 2;   // as faces guardam a referência
     });
     var centro = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
     var raio = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 1;
     var cam = { yaw: -0.6, pitch: 0.35, zoom: 1 };
     var soPeca = false;
+    // EXPLODIR: cada peça anda (centro dela − centro do móvel) × f. f vai de
+    // 0 (montado) até "distancia" (barra Afastar), animado.
+    var expl = { f: 0, alvo: 0, dist: 0.8, anim: null };
     var ctx = tela.getContext('2d');
     var W = 0, H = 0, dpr = 1;
 
@@ -155,10 +171,14 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
       var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-      var k = Math.min(W, H - 70) * 0.46 / raio * cam.zoom;
-      var ox = W / 2, oy = (H - 50) / 2;
-      function proj(p) {
-        var x = p[0] - centro[0], y = p[1] - centro[1], z = p[2] - centro[2];
+      // explodido o móvel cresce: o enquadramento abre junto (só a peça: não)
+      var f = soPeca ? 0 : expl.f;
+      var k = Math.min(W, H - 70) * 0.46 / (raio * (1 + f)) * cam.zoom;
+      var ox = W / 2, oy = (H - (expl.alvo > 0 ? 100 : 50)) / 2;
+      function proj(p, c) {
+        var x = p[0] - centro[0] + (c[0] - centro[0]) * f;
+        var y = p[1] - centro[1] + (c[1] - centro[1]) * f;
+        var z = p[2] - centro[2] + (c[2] - centro[2]) * f;
         var xr = x * cy - y * sy, yr = x * sy + y * cy;
         var depth = yr * cp - z * sp, up = yr * sp + z * cp;
         return [ox + k * xr, oy - k * up, depth];
@@ -166,7 +186,7 @@
       var lista = [];
       polis.forEach(function (q) {
         if (soPeca && !q.alvo) return;
-        var s = q.p.map(proj);
+        var s = q.p.map(function (p) { return proj(p, q.c); });
         var d = 0;
         s.forEach(function (v) { d += v[2]; });
         var n = q.n;
@@ -235,10 +255,42 @@
       cam.zoom = Math.max(0.3, Math.min(8, cam.zoom * (e.deltaY < 0 ? 1.15 : 0.87)));
       desenhar();
     }, { passive: false });
+    var btExplodir = document.getElementById('btExplodir');
+    var separar = document.getElementById('separar');
+    var barra = document.getElementById('distancia');
+
+    // anima f até o alvo (~0,4 s, desacelerando no fim)
+    function animar() {
+      if (expl.anim) cancelAnimationFrame(expl.anim);
+      var de = expl.f, ate = expl.alvo, t0 = performance.now();
+      function passo(t) {
+        var u = Math.min(1, (t - t0) / 400);
+        expl.f = de + (ate - de) * (1 - Math.pow(1 - u, 3));
+        render();
+        expl.anim = u < 1 ? requestAnimationFrame(passo) : null;
+      }
+      expl.anim = requestAnimationFrame(passo);
+    }
+    function mostrarBarra() { separar.hidden = !(expl.alvo > 0) || soPeca; }
+
+    btExplodir.addEventListener('click', function () {
+      expl.alvo = expl.alvo > 0 ? 0 : expl.dist;
+      this.classList.toggle('ativo', expl.alvo > 0);
+      this.textContent = expl.alvo > 0 ? 'Montar' : 'Explodir';
+      mostrarBarra();
+      animar();
+    });
+    barra.addEventListener('input', function () {
+      expl.dist = parseFloat(this.value);
+      if (expl.alvo > 0) { expl.alvo = expl.f = expl.dist; if (expl.anim) cancelAnimationFrame(expl.anim); expl.anim = null; desenhar(); }
+    });
     document.getElementById('btSo').addEventListener('click', function () {
       soPeca = !soPeca;
       this.classList.toggle('ativo', soPeca);
       this.textContent = soPeca ? 'Ver o móvel' : 'Só a peça';
+      btExplodir.disabled = soPeca;
+      btExplodir.style.opacity = soPeca ? 0.45 : '';
+      mostrarBarra();
       desenhar();
     });
     document.getElementById('btVista').addEventListener('click', function () {
