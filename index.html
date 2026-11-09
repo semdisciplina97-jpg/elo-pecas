@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="robots" content="noindex, nofollow">
+<title>Peça — ELO</title>
+<style>
+  :root { --fundo: #f3f1ec; --texto: #1f2329; --suave: #6b7280; --laranja: #ff7a00; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--fundo); color: var(--texto); font: 15px/1.35 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; touch-action: none; }
+  header { padding: 12px 16px 10px; background: #1f2329; color: #fff; }
+  .linha1 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .cod { font-size: 28px; font-weight: 800; color: var(--laranja); }
+  .peca { font-size: 19px; font-weight: 700; }
+  .info { color: #c9ced6; margin-top: 2px; }
+  .info b { color: #fff; }
+  #tela { flex: 1; width: 100%; display: block; }
+  .botoes { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); justify-content: center; pointer-events: none; }
+  .botoes button { pointer-events: auto; font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 22px; border: 1px solid #d0cbc0; background: rgba(255,255,255,.92); color: var(--texto); }
+  .botoes button.ativo { background: var(--laranja); border-color: var(--laranja); color: #fff; }
+  .msg { padding: 24px 16px; font-size: 17px; }
+</style>
+</head>
+<body>
+<header id="cab"></header>
+<canvas id="tela"></canvas>
+<div class="botoes" id="botoes" hidden>
+  <button id="btSo">Só a peça</button>
+  <button id="btVista">Ver de frente</button>
+</div>
+<script>
+// Domus Corte CNC — página da peça NA INTERNET (GitHub Pages), para o QR
+// funcionar na obra. O link do QR é
+//   <endereço>/#<id do móvel>/<senha>/<peça>/<código>
+// e TUDO depois do "#" fica no celular (o navegador não envia ao servidor).
+// O arquivo m/<id>.bin é o móvel em JSON, compactado (gzip) e trancado com
+// AES-128-GCM: 12 bytes de iv + texto cifrado + 16 bytes de etiqueta. A
+// senha (16 bytes, base64url) só existe dentro do QR.
+(function () {
+  'use strict';
+  var cab = document.getElementById('cab');
+  var tela = document.getElementById('tela');
+  function esc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function mm(v) { return String(Math.round(v * 10) / 10).replace('.', ','); }
+
+  function mensagem(codigo, texto) {
+    cab.innerHTML = '<div class="linha1"><span class="cod">' + esc(codigo || '') + '</span></div>';
+    tela.hidden = true;
+    var d = document.createElement('div');
+    d.className = 'msg';
+    d.textContent = texto;
+    document.body.appendChild(d);
+  }
+
+  function bytesB64url(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s), b = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+    return b;
+  }
+
+  async function abrir() {
+    var partesLink = decodeURIComponent(location.hash.replace(/^#/, '')).split('/');
+    var id = partesLink[0], senha = partesLink[1], alvo = partesLink[2] || '', codigo = partesLink.slice(3).join('/');
+    if (!id || !senha || !/^[A-Za-z0-9_-]+$/.test(id)) { mensagem('', 'Escaneie o QR de uma etiqueta.'); return; }
+    if (!window.crypto || !crypto.subtle || !window.DecompressionStream) {
+      mensagem(codigo, 'Este navegador é antigo demais para abrir a peça. Atualize o navegador do celular.');
+      return;
+    }
+    cab.innerHTML = '<div class="linha1"><span class="cod">' + esc(codigo) + '</span><span class="peca">Carregando…</span></div>';
+    var resp;
+    try {
+      resp = await fetch('m/' + id + '.bin', { cache: 'no-store' });
+    } catch (e) {
+      mensagem(codigo, 'Sem internet no celular. Conecte e escaneie de novo.');
+      return;
+    }
+    if (!resp.ok) {
+      mensagem(codigo, 'Esta peça ainda não foi publicada. No plugin, salve os arquivos ou imprima as etiquetas com internet e espere 1 minuto.');
+      return;
+    }
+    var dados;
+    try {
+      var tudo = new Uint8Array(await resp.arrayBuffer());
+      var chave = await crypto.subtle.importKey('raw', bytesB64url(senha), 'AES-GCM', false, ['decrypt']);
+      var aberto = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: tudo.slice(0, 12) }, chave, tudo.slice(12));
+      var texto = await new Response(new Blob([aberto]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+      dados = JSON.parse(texto);
+    } catch (e) {
+      mensagem(codigo, 'Não deu para abrir esta peça (QR de outra versão ou danificado).');
+      return;
+    }
+    mostrar(dados, alvo, codigo);
+  }
+
+  function mostrar(DADOS, alvo, codigo) {
+    var parte = DADOS.partes.filter(function (p) { return p.p === alvo; })[0];
+    DADOS.partes.forEach(function (p) { p.a = p === parte; });
+    cab.innerHTML = '<div class="linha1">' + (codigo ? '<span class="cod">' + esc(codigo) + '</span>' : '') +
+      '<span class="peca">' + esc(parte ? parte.n : 'Peça não encontrada neste móvel') + '</span></div>' +
+      '<div class="info">Móvel: <b>' + esc(DADOS.movel) + '</b></div>' +
+      (parte && parte.m ? '<div class="info">' + parte.m.map(mm).join(' × ') + ' mm' + (parte.mt ? ' · ' + esc(parte.mt) : '') + '</div>' : '');
+    document.getElementById('botoes').hidden = false;
+    desenho(DADOS);
+  }
+
+  // Desenho: o mesmo da página da rede da oficina (ui/peca.html).
+  function desenho(DADOS) {
+    var polis = [];
+    var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    DADOS.partes.forEach(function (parte) {
+      parte.f.forEach(function (plano) {
+        var pts = [];
+        for (var i = 0; i + 2 < plano.length; i += 3) {
+          var p = [plano[i], plano[i + 1], plano[i + 2]];
+          for (var k = 0; k < 3; k++) { if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k]; }
+          pts.push(p);
+        }
+        if (pts.length < 3) return;
+        var n = [0, 0, 0];
+        for (var j = 0; j < pts.length; j++) {
+          var a = pts[j], b = pts[(j + 1) % pts.length];
+          n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+          n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+          n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        var L = Math.hypot(n[0], n[1], n[2]) || 1;
+        polis.push({ p: pts, alvo: parte.a, n: [n[0] / L, n[1] / L, n[2] / L] });
+      });
+    });
+    var centro = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+    var raio = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 1;
+    var cam = { yaw: -0.6, pitch: 0.35, zoom: 1 };
+    var soPeca = false;
+    var ctx = tela.getContext('2d');
+    var W = 0, H = 0, dpr = 1;
+
+    function medir() {
+      dpr = window.devicePixelRatio || 1;
+      W = tela.clientWidth; H = tela.clientHeight;
+      tela.width = Math.round(W * dpr); tela.height = Math.round(H * dpr);
+      desenhar();
+    }
+    var pedido = false;
+    function desenhar() {
+      if (pedido) return;
+      pedido = true;
+      requestAnimationFrame(function () { pedido = false; render(); });
+    }
+    function render() {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      var k = Math.min(W, H - 70) * 0.46 / raio * cam.zoom;
+      var ox = W / 2, oy = (H - 50) / 2;
+      function proj(p) {
+        var x = p[0] - centro[0], y = p[1] - centro[1], z = p[2] - centro[2];
+        var xr = x * cy - y * sy, yr = x * sy + y * cy;
+        var depth = yr * cp - z * sp, up = yr * sp + z * cp;
+        return [ox + k * xr, oy - k * up, depth];
+      }
+      var lista = [];
+      polis.forEach(function (q) {
+        if (soPeca && !q.alvo) return;
+        var s = q.p.map(proj);
+        var d = 0;
+        s.forEach(function (v) { d += v[2]; });
+        var n = q.n;
+        var ny = n[0] * sy + n[1] * cy, nz = n[2];
+        var luz = 0.55 + 0.45 * Math.abs(-(ny * cp - nz * sp));
+        lista.push({ s: s, d: d / s.length, alvo: q.alvo, luz: luz });
+      });
+      lista.sort(function (a, b) { return b.d - a.d; });
+      function caminho(s) {
+        ctx.beginPath();
+        ctx.moveTo(s[0][0], s[0][1]);
+        for (var i = 1; i < s.length; i++) ctx.lineTo(s[i][0], s[i][1]);
+        ctx.closePath();
+      }
+      lista.forEach(function (q) {
+        if (q.alvo) return;
+        caminho(q.s);
+        var c = Math.round(200 * q.luz);
+        ctx.fillStyle = 'rgba(' + c + ',' + Math.round(c * 0.97) + ',' + Math.round(c * 0.9) + ',0.22)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(60,64,70,0.35)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      });
+      lista.forEach(function (q) {
+        if (!q.alvo) return;
+        caminho(q.s);
+        ctx.fillStyle = 'rgb(' + Math.round(255 * q.luz) + ',' + Math.round(122 * q.luz) + ',0)';
+        ctx.fill();
+        ctx.strokeStyle = '#6b2f00';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      });
+    }
+
+    var dedos = {}, inicio = null;
+    function lista() { return Object.keys(dedos).map(function (k) { return dedos[k]; }); }
+    tela.addEventListener('pointerdown', function (e) {
+      tela.setPointerCapture(e.pointerId);
+      dedos[e.pointerId] = { x: e.clientX, y: e.clientY };
+      inicio = { cam: { yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom }, l: lista().map(function (p) { return { x: p.x, y: p.y }; }) };
+    });
+    tela.addEventListener('pointermove', function (e) {
+      if (!dedos[e.pointerId] || !inicio) return;
+      dedos[e.pointerId] = { x: e.clientX, y: e.clientY };
+      var l = lista();
+      if (l.length === 1 && inicio.l.length === 1) {
+        cam.yaw = inicio.cam.yaw - (l[0].x - inicio.l[0].x) * 0.01;
+        cam.pitch = Math.max(-1.5, Math.min(1.5, inicio.cam.pitch + (l[0].y - inicio.l[0].y) * 0.01));
+      } else if (l.length === 2 && inicio.l.length === 2) {
+        var d0 = Math.hypot(inicio.l[0].x - inicio.l[1].x, inicio.l[0].y - inicio.l[1].y);
+        var d1 = Math.hypot(l[0].x - l[1].x, l[0].y - l[1].y);
+        cam.zoom = Math.max(0.3, Math.min(8, inicio.cam.zoom * d1 / Math.max(1, d0)));
+      }
+      desenhar();
+    });
+    function soltar(e) {
+      delete dedos[e.pointerId];
+      var l = lista();
+      inicio = l.length ? { cam: { yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom }, l: l.map(function (p) { return { x: p.x, y: p.y }; }) } : null;
+    }
+    tela.addEventListener('pointerup', soltar);
+    tela.addEventListener('pointercancel', soltar);
+    tela.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      cam.zoom = Math.max(0.3, Math.min(8, cam.zoom * (e.deltaY < 0 ? 1.15 : 0.87)));
+      desenhar();
+    }, { passive: false });
+    document.getElementById('btSo').addEventListener('click', function () {
+      soPeca = !soPeca;
+      this.classList.toggle('ativo', soPeca);
+      this.textContent = soPeca ? 'Ver o móvel' : 'Só a peça';
+      desenhar();
+    });
+    document.getElementById('btVista').addEventListener('click', function () {
+      cam.yaw = 0; cam.pitch = 0.05; cam.zoom = 1;
+      desenhar();
+    });
+    window.addEventListener('resize', medir);
+    medir();
+  }
+
+  window.addEventListener('hashchange', function () { location.reload(); });
+  abrir();
+})();
+</script>
+</body>
+</html>
