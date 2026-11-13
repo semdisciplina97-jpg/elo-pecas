@@ -30,11 +30,10 @@
 <header id="cab"></header>
 <canvas id="tela"></canvas>
 <div class="separar" id="separar" hidden>
-  <span>Afastar</span><input type="range" id="distancia" min="0.15" max="2" step="0.05" value="0.8">
+  <span>Separar peças</span><input type="range" id="distancia" min="0" max="2" step="0.01" value="0">
 </div>
 <div class="botoes" id="botoes" hidden>
   <button id="btSo">Só a peça</button>
-  <button id="btExplodir">Explodir</button>
   <button id="btVista">Ver de frente</button>
 </div>
 <script>
@@ -147,11 +146,15 @@
     });
     var centro = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
     var raio = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 1;
-    var cam = { yaw: -0.6, pitch: 0.35, zoom: 1 };
+    // Câmera: yaw/pitch giram, zoom aproxima, px/py arrastam (em mm do
+    // plano da tela — o arrasto acompanha o zoom).
+    var cam = { yaw: -0.6, pitch: 0.35, zoom: 1, px: 0, py: 0 };
     var soPeca = false;
-    // EXPLODIR: cada peça anda (centro dela − centro do móvel) × f. f vai de
-    // 0 (montado) até "distancia" (barra Afastar), animado.
-    var expl = { f: 0, alvo: 0, dist: 0.8, anim: null };
+    // SEPARAR (0.9.18): cada peça anda (centro dela − centro do móvel) × f; f
+    // vem direto da barra "Separar peças" — as peças se afastam aos poucos.
+    var expl = { f: 0 };
+    var separar = document.getElementById('separar');
+    var barra = document.getElementById('distancia');
     var ctx = tela.getContext('2d');
     var W = 0, H = 0, dpr = 1;
 
@@ -167,14 +170,19 @@
       pedido = true;
       requestAnimationFrame(function () { pedido = false; render(); });
     }
+    // px por mm na tela (explodido o móvel cresce: o enquadramento abre junto)
+    function escala() {
+      var f = soPeca ? 0 : expl.f;
+      return Math.max(40, Math.min(W, H - 120)) * 0.46 / (raio * (1 + f)) * cam.zoom;
+    }
+    function meioY() { return (H - (separar.hidden ? 50 : 110)) / 2; }
     function render() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
       var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-      // explodido o móvel cresce: o enquadramento abre junto (só a peça: não)
       var f = soPeca ? 0 : expl.f;
-      var k = Math.min(W, H - 70) * 0.46 / (raio * (1 + f)) * cam.zoom;
-      var ox = W / 2, oy = (H - (expl.alvo > 0 ? 100 : 50)) / 2;
+      var k = escala();
+      var ox = W / 2 + k * cam.px, oy = meioY() - k * cam.py;
       function proj(p, c) {
         var x = p[0] - centro[0] + (c[0] - centro[0]) * f;
         var y = p[1] - centro[1] + (c[1] - centro[1]) * f;
@@ -222,81 +230,93 @@
       });
     }
 
+    // GESTOS (0.9.18): 1 dedo / botão esquerdo gira; 2 dedos arrastam e dão
+    // zoom juntos (pinça); botão direito, do meio ou Shift + esquerdo
+    // arrastam; roda do mouse dá zoom no ponto do cursor.
+    var ZOOM_MIN = 0.2, ZOOM_MAX = 40;
     var dedos = {}, inicio = null;
     function lista() { return Object.keys(dedos).map(function (k) { return dedos[k]; }); }
+    function foto() {
+      var l = lista();
+      inicio = l.length ? { cam: { yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom, px: cam.px, py: cam.py },
+                            l: l.map(function (p) { return { x: p.x, y: p.y, arrastar: p.arrastar }; }) } : null;
+    }
+    // zoom mantendo parado o ponto da tela (sx, sy) — com o arrasto de partida c0
+    function zoomEm(c0, novoZoom, sx, sy) {
+      novoZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, novoZoom));
+      var k0 = escala() / cam.zoom * c0.zoom, k1 = escala() / cam.zoom * novoZoom;
+      var a = (sx - W / 2) / k0 - c0.px, b = (meioY() - sy) / k0 - c0.py;
+      cam.zoom = novoZoom;
+      cam.px = (sx - W / 2) / k1 - a;
+      cam.py = (meioY() - sy) / k1 - b;
+    }
+    function posTela(e) { var r = tela.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    tela.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     tela.addEventListener('pointerdown', function (e) {
-      tela.setPointerCapture(e.pointerId);
-      dedos[e.pointerId] = { x: e.clientX, y: e.clientY };
-      inicio = { cam: { yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom }, l: lista().map(function (p) { return { x: p.x, y: p.y }; }) };
+      try { tela.setPointerCapture(e.pointerId); } catch (x) { }
+      var p = posTela(e);
+      p.arrastar = e.pointerType === 'mouse' && (e.button === 1 || e.button === 2 || e.shiftKey);
+      dedos[e.pointerId] = p;
+      foto();
     });
     tela.addEventListener('pointermove', function (e) {
       if (!dedos[e.pointerId] || !inicio) return;
-      dedos[e.pointerId] = { x: e.clientX, y: e.clientY };
-      var l = lista();
+      var p = posTela(e);
+      p.arrastar = dedos[e.pointerId].arrastar;
+      dedos[e.pointerId] = p;
+      var l = lista(), k = escala();
       if (l.length === 1 && inicio.l.length === 1) {
-        cam.yaw = inicio.cam.yaw - (l[0].x - inicio.l[0].x) * 0.01;
-        cam.pitch = Math.max(-1.5, Math.min(1.5, inicio.cam.pitch + (l[0].y - inicio.l[0].y) * 0.01));
+        var dx = l[0].x - inicio.l[0].x, dy = l[0].y - inicio.l[0].y;
+        if (inicio.l[0].arrastar) {
+          cam.px = inicio.cam.px + dx / k;
+          cam.py = inicio.cam.py - dy / k;
+        } else {
+          cam.yaw = inicio.cam.yaw - dx * 0.01;
+          cam.pitch = Math.max(-1.55, Math.min(1.55, inicio.cam.pitch + dy * 0.01));
+        }
       } else if (l.length === 2 && inicio.l.length === 2) {
         var d0 = Math.hypot(inicio.l[0].x - inicio.l[1].x, inicio.l[0].y - inicio.l[1].y);
         var d1 = Math.hypot(l[0].x - l[1].x, l[0].y - l[1].y);
-        cam.zoom = Math.max(0.3, Math.min(8, inicio.cam.zoom * d1 / Math.max(1, d0)));
+        var m0 = { x: (inicio.l[0].x + inicio.l[1].x) / 2, y: (inicio.l[0].y + inicio.l[1].y) / 2 };
+        var m1 = { x: (l[0].x + l[1].x) / 2, y: (l[0].y + l[1].y) / 2 };
+        // pinça no meio dos dedos de partida e, depois, o meio acompanha os dedos
+        zoomEm(inicio.cam, inicio.cam.zoom * d1 / Math.max(1, d0), m0.x, m0.y);
+        k = escala();
+        cam.px += (m1.x - m0.x) / k;
+        cam.py -= (m1.y - m0.y) / k;
       }
       desenhar();
     });
     function soltar(e) {
       delete dedos[e.pointerId];
-      var l = lista();
-      inicio = l.length ? { cam: { yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom }, l: l.map(function (p) { return { x: p.x, y: p.y }; }) } : null;
+      foto();
     }
     tela.addEventListener('pointerup', soltar);
     tela.addEventListener('pointercancel', soltar);
     tela.addEventListener('wheel', function (e) {
       e.preventDefault();
-      cam.zoom = Math.max(0.3, Math.min(8, cam.zoom * (e.deltaY < 0 ? 1.15 : 0.87)));
+      var p = posTela(e);
+      zoomEm({ zoom: cam.zoom, px: cam.px, py: cam.py }, cam.zoom * (e.deltaY < 0 ? 1.15 : 0.87), p.x, p.y);
       desenhar();
     }, { passive: false });
-    var btExplodir = document.getElementById('btExplodir');
-    var separar = document.getElementById('separar');
-    var barra = document.getElementById('distancia');
 
-    // anima f até o alvo (~0,4 s, desacelerando no fim)
-    function animar() {
-      if (expl.anim) cancelAnimationFrame(expl.anim);
-      var de = expl.f, ate = expl.alvo, t0 = performance.now();
-      function passo(t) {
-        var u = Math.min(1, (t - t0) / 400);
-        expl.f = de + (ate - de) * (1 - Math.pow(1 - u, 3));
-        render();
-        expl.anim = u < 1 ? requestAnimationFrame(passo) : null;
-      }
-      expl.anim = requestAnimationFrame(passo);
-    }
-    function mostrarBarra() { separar.hidden = !(expl.alvo > 0) || soPeca; }
-
-    btExplodir.addEventListener('click', function () {
-      expl.alvo = expl.alvo > 0 ? 0 : expl.dist;
-      this.classList.toggle('ativo', expl.alvo > 0);
-      this.textContent = expl.alvo > 0 ? 'Montar' : 'Explodir';
-      mostrarBarra();
-      animar();
-    });
+    function mostrarBarra() { separar.hidden = soPeca; }
     barra.addEventListener('input', function () {
-      expl.dist = parseFloat(this.value);
-      if (expl.alvo > 0) { expl.alvo = expl.f = expl.dist; if (expl.anim) cancelAnimationFrame(expl.anim); expl.anim = null; desenhar(); }
+      expl.f = parseFloat(this.value) || 0;
+      desenhar();
     });
     document.getElementById('btSo').addEventListener('click', function () {
       soPeca = !soPeca;
       this.classList.toggle('ativo', soPeca);
       this.textContent = soPeca ? 'Ver o móvel' : 'Só a peça';
-      btExplodir.disabled = soPeca;
-      btExplodir.style.opacity = soPeca ? 0.45 : '';
       mostrarBarra();
       desenhar();
     });
     document.getElementById('btVista').addEventListener('click', function () {
-      cam.yaw = 0; cam.pitch = 0.05; cam.zoom = 1;
+      cam.yaw = 0; cam.pitch = 0.05; cam.zoom = 1; cam.px = 0; cam.py = 0;
       desenhar();
     });
+    mostrarBarra();
     window.addEventListener('resize', medir);
     medir();
   }
