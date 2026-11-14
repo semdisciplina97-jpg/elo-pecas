@@ -222,9 +222,9 @@
       lista.forEach(function (q) {
         if (!q.alvo) return;
         caminho(q.s);
-        ctx.fillStyle = 'rgb(' + Math.round(255 * q.luz) + ',' + Math.round(122 * q.luz) + ',0)';
+        ctx.fillStyle = 'rgba(' + Math.round(255 * q.luz) + ',' + Math.round(122 * q.luz) + ',0,0.38)';   // 0.9.19: meio transparente
         ctx.fill();
-        ctx.strokeStyle = '#6b2f00';
+        ctx.strokeStyle = 'rgba(190,80,0,0.95)';
         ctx.lineWidth = 1.4;
         ctx.stroke();
       });
