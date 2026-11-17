@@ -35,6 +35,7 @@
 <div class="botoes" id="botoes" hidden>
   <button id="btSo">Só a peça</button>
   <button id="btVista">Ver de frente</button>
+  <button id="btAmb" hidden>Só o módulo</button>
 </div>
 <script>
 // Domus Corte CNC — página da peça NA INTERNET (GitHub Pages), para o QR
@@ -107,6 +108,7 @@
     DADOS.partes.forEach(function (p) { p.a = p === parte; });
     cab.innerHTML = '<div class="linha1">' + (codigo ? '<span class="cod">' + esc(codigo) + '</span>' : '') +
       '<span class="peca">' + esc(parte ? parte.n : 'Peça não encontrada neste móvel') + '</span></div>' +
+      (DADOS.ambiente && DADOS.ambiente.n ? '<div class="info">Ambiente: <b>' + esc(DADOS.ambiente.n) + '</b></div>' : '') +
       '<div class="info">Móvel: <b>' + esc(DADOS.movel) + '</b></div>' +
       (parte && parte.m ? '<div class="info">' + parte.m.map(mm).join(' × ') + ' mm' + (parte.mt ? ' · ' + esc(parte.mt) : '') + '</div>' : '');
     document.getElementById('botoes').hidden = false;
@@ -144,8 +146,35 @@
       });
       for (var q = 0; q < 3; q++) centroPeca[q] = (pmin[q] + pmax[q]) / 2;   // as faces guardam a referência
     });
-    var centro = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
-    var raio = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 1;
+    var centroMod = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+    // 0.9.20 — AMBIENTE: o resto do grupo com nome (Suíte 1…) em cinza claro,
+    // para ver onde o módulo vai na montagem (DADOS.ambiente.f: faces em mm).
+    var minA = min.slice(), maxA = max.slice();
+    var temAmb = !!(DADOS.ambiente && DADOS.ambiente.f && DADOS.ambiente.f.length);
+    if (temAmb) DADOS.ambiente.f.forEach(function (plano) {
+      var pts = [];
+      for (var i = 0; i + 2 < plano.length; i += 3) {
+        var p = [plano[i], plano[i + 1], plano[i + 2]];
+        for (var k = 0; k < 3; k++) { if (p[k] < minA[k]) minA[k] = p[k]; if (p[k] > maxA[k]) maxA[k] = p[k]; }
+        pts.push(p);
+      }
+      if (pts.length < 3) return;
+      var n = [0, 0, 0];
+      for (var j = 0; j < pts.length; j++) {
+        var a = pts[j], b = pts[(j + 1) % pts.length];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]); n[1] += (a[2] - b[2]) * (a[0] + b[0]); n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+      }
+      var L = Math.hypot(n[0], n[1], n[2]) || 1;
+      polis.push({ p: pts, alvo: false, ctx: true, n: [n[0] / L, n[1] / L, n[2] / L], c: centroMod });
+    });
+    var verAmb = temAmb;
+    var centro, raio;
+    function enquadrar() {
+      var a = verAmb ? minA : min, b = verAmb ? maxA : max;
+      centro = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+      raio = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / 2 || 1;
+    }
+    enquadrar();
     // Câmera: yaw/pitch giram, zoom aproxima, px/py arrastam (em mm do
     // plano da tela — o arrasto acompanha o zoom).
     var cam = { yaw: -0.6, pitch: 0.35, zoom: 1, px: 0, py: 0 };
@@ -184,9 +213,9 @@
       var k = escala();
       var ox = W / 2 + k * cam.px, oy = meioY() - k * cam.py;
       function proj(p, c) {
-        var x = p[0] - centro[0] + (c[0] - centro[0]) * f;
-        var y = p[1] - centro[1] + (c[1] - centro[1]) * f;
-        var z = p[2] - centro[2] + (c[2] - centro[2]) * f;
+        var x = p[0] - centro[0] + (c[0] - centroMod[0]) * f;
+        var y = p[1] - centro[1] + (c[1] - centroMod[1]) * f;
+        var z = p[2] - centro[2] + (c[2] - centroMod[2]) * f;
         var xr = x * cy - y * sy, yr = x * sy + y * cy;
         var depth = yr * cp - z * sp, up = yr * sp + z * cp;
         return [ox + k * xr, oy - k * up, depth];
@@ -194,13 +223,14 @@
       var lista = [];
       polis.forEach(function (q) {
         if (soPeca && !q.alvo) return;
+        if (q.ctx && !verAmb) return;   // 0.9.20: o resto do ambiente
         var s = q.p.map(function (p) { return proj(p, q.c); });
         var d = 0;
         s.forEach(function (v) { d += v[2]; });
         var n = q.n;
         var ny = n[0] * sy + n[1] * cy, nz = n[2];
         var luz = 0.55 + 0.45 * Math.abs(-(ny * cp - nz * sp));
-        lista.push({ s: s, d: d / s.length, alvo: q.alvo, luz: luz });
+        lista.push({ s: s, d: d / s.length, alvo: q.alvo, ctx: q.ctx, luz: luz });
       });
       lista.sort(function (a, b) { return b.d - a.d; });
       function caminho(s) {
@@ -211,6 +241,15 @@
       }
       lista.forEach(function (q) {
         if (q.alvo) return;
+        if (q.ctx) {   // 0.9.20: ambiente em cinza bem claro
+          caminho(q.s);
+          ctx.fillStyle = 'rgba(150,155,160,0.10)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(60,64,70,0.16)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          return;
+        }
         caminho(q.s);
         var c = Math.round(200 * q.luz);
         ctx.fillStyle = 'rgba(' + c + ',' + Math.round(c * 0.97) + ',' + Math.round(c * 0.9) + ',0.22)';
@@ -310,6 +349,15 @@
       this.classList.toggle('ativo', soPeca);
       this.textContent = soPeca ? 'Ver o móvel' : 'Só a peça';
       mostrarBarra();
+      desenhar();
+    });
+    // 0.9.20: "Só o módulo" / "Ver o ambiente"
+    var btAmb = document.getElementById('btAmb');
+    btAmb.hidden = !temAmb;
+    btAmb.addEventListener('click', function () {
+      verAmb = !verAmb;
+      this.textContent = verAmb ? 'Só o módulo' : 'Ver o ambiente';
+      enquadrar();
       desenhar();
     });
     document.getElementById('btVista').addEventListener('click', function () {
